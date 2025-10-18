@@ -4,9 +4,11 @@ import pusher
 
 app = Flask(__name__)
 
-# Configuración de CORS para permitir solo tu dominio
-CORS(app, origins=["https://websocket-front-wil-git-master-wils20s-projects.vercel.app"])
-CORS(app, origins=["https://websocket-front-wil2-git-master-wils20s-projects.vercel.app"])
+# Configuración de CORS para permitir solo los dominios que necesitas
+CORS(app, origins=[
+    "https://websocket-front-wil-git-master-wils20s-projects.vercel.app",
+    "https://websocket-front-wil2-git-master-wils20s-projects.vercel.app"
+])
 
 # Inicialización de Pusher
 pusher_client = pusher.Pusher(
