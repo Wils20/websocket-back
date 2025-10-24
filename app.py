@@ -9,9 +9,9 @@ app = Flask(__name__)
 # 🔓 Permitir acceso desde tus frontends de Vercel
 CORS(app, origins=[
     "https://websocket-front-wil.vercel.app",           # ✅ dominio del cliente 1
-    "https://websocket-front-wil2.vercel.app",          # ✅ dominio del cliente 2
+    "https://websocket-front2-wil.vercel.app",          # ✅ dominio del cliente 2
     "https://websocket-front-wil-git-master-wils20s-projects.vercel.app",
-    "https://websocket-front-wil2-git-master-wils20s-projects.vercel.app"
+    "https://websocket-front2-wil-git-master-wils20s-projects.vercel.app"
 ])
 
 # 🔹 Conexión a MySQL (AlwaysData)
