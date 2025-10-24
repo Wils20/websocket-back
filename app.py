@@ -1,13 +1,15 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pusher
-import mysql.connector
+import mysql.connector 
 from datetime import datetime
 
 app = Flask(__name__)
 
-# 🔹 CORS: permite tus frontends (vercel)
+# 🔓 Permitir acceso desde tus frontends de Vercel
 CORS(app, origins=[
+    "https://websocket-front-wil.vercel.app",           # ✅ dominio del cliente 1
+    "https://websocket-front-wil2.vercel.app",          # ✅ dominio del cliente 2
     "https://websocket-front-wil-git-master-wils20s-projects.vercel.app",
     "https://websocket-front-wil2-git-master-wils20s-projects.vercel.app"
 ])
