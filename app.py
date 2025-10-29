@@ -8,7 +8,7 @@ import string
 
 app = Flask(__name__)
 
-# 🔓 CORS (autoriza solo tus frontends)
+# 🔓 CORS (para frontends)
 CORS(app, origins=[
     "https://websocket-front-wil.vercel.app",
     "https://websocket-front2-wil.vercel.app",
@@ -25,7 +25,7 @@ def get_db_connection():
         database="wilson_db"
     )
 
-# 🔹 Configuración de Pusher
+# 🔹 Pusher
 pusher_client = pusher.Pusher(
     app_id='2062323',
     key='b6bbf62d682a7a882f41',
@@ -34,11 +34,11 @@ pusher_client = pusher.Pusher(
     ssl=True
 )
 
-# ✅ Generar nombre de canal aleatorio
+# ✅ Generar canal aleatorio
 def generar_canal():
     return "channel_" + ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
-# ✅ Endpoint: asignar canal automático a cada usuario
+# ✅ Endpoint para unir cliente a un canal
 @app.route("/join", methods=["POST"])
 def join_channel():
     try:
@@ -49,7 +49,7 @@ def join_channel():
 
         canal = generar_canal()
 
-        # Guardar canal asignado
+        # Guardar en la BD si quieres llevar registro
         db = get_db_connection()
         cursor = db.cursor()
         cursor.execute(
@@ -72,14 +72,13 @@ def enviar_mensaje():
         data = request.get_json()
         username = data.get("sender")
         message = data.get("message")
-        channel = data.get("channel")
+        channel = data.get("channel", "general")
 
-        if not username or not message or not channel:
-            return jsonify({"error": "Missing fields"}), 400
+        if not username or not message:
+            return jsonify({"error": "Missing 'sender' or 'message'"}), 400
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Guardar mensaje
         db = get_db_connection()
         cursor = db.cursor()
         cursor.execute(
@@ -90,7 +89,6 @@ def enviar_mensaje():
         cursor.close()
         db.close()
 
-        # Enviar mensaje por Pusher
         pusher_client.trigger(channel, 'new-message', {
             'sender': username,
             'message': message,
@@ -103,7 +101,7 @@ def enviar_mensaje():
         return jsonify({"error": str(e)}), 500
 
 
-# ✅ Obtener mensajes de un canal
+# ✅ Obtener mensajes
 @app.route("/messages/<channel>", methods=["GET"])
 def obtener_mensajes(channel):
     try:
@@ -121,7 +119,7 @@ def obtener_mensajes(channel):
         return jsonify({"error": str(e)}), 500
 
 
-# ✅ Interfaz simple para probar el chat
+# ✅ Página simple (igual que antes)
 @app.route("/")
 def index():
     return render_template_string("""
@@ -131,37 +129,17 @@ def index():
 <meta charset="UTF-8">
 <title>Chat con canal automático</title>
 <script src="https://js.pusher.com/8.2/pusher.min.js"></script>
-<style>
-body {
-  font-family: Arial, sans-serif;
-  background: #f4f4f4;
-  margin: 0;
-  padding: 20px;
-}
-#chat-area { display:none; }
-#chat-box {
-  background: white;
-  border: 1px solid #ccc;
-  height: 300px;
-  overflow-y: auto;
-  padding: 10px;
-  margin-top: 10px;
-}
-.message { margin-bottom: 8px; }
-.message strong { color: #5a2ca0; }
-</style>
 </head>
 <body>
-<h2>💬 Chat con canal automático</h2>
-<p>Ingresa tu nombre y obtendrás un canal único.</p>
-
+<h2>Chat Automático 🔄</h2>
+<p>Tu canal se generará automáticamente</p>
 <input id="username" placeholder="Tu nombre">
 <button onclick="joinChat()">Unirme</button>
 
-<div id="chat-area">
+<div id="chat-area" style="display:none;">
   <h3 id="canal"></h3>
-  <div id="chat-box"></div>
-  <input id="message" placeholder="Escribe un mensaje...">
+  <div id="chat-box" style="border:1px solid #ccc;height:300px;overflow:auto;margin:10px 0;padding:5px;"></div>
+  <input id="message" placeholder="Mensaje...">
   <button onclick="sendMessage()">Enviar</button>
 </div>
 
@@ -195,8 +173,7 @@ async function loadMessages(channel) {
     const res = await fetch("/messages/" + channel);
     const msgs = await res.json();
     const box = document.getElementById("chat-box");
-    box.innerHTML = msgs.map(m => "<div class='message'><strong>" + m.username + ":</strong> " + m.message + "</div>").join("");
-    box.scrollTop = box.scrollHeight;
+    box.innerHTML = msgs.map(m => "<p><b>" + m.username + ":</b> " + m.message + "</p>").join("");
 }
 
 async function sendMessage() {
@@ -214,7 +191,7 @@ function subscribeChannel(channel) {
     channelPusher = pusher.subscribe(channel);
     channelPusher.bind('new-message', data => {
         const box = document.getElementById("chat-box");
-        box.innerHTML += "<div class='message'><strong>" + data.sender + ":</strong> " + data.message + "</div>";
+        box.innerHTML += "<p><b>" + data.sender + ":</b> " + data.message + "</p>";
         box.scrollTop = box.scrollHeight;
     });
 }
@@ -224,7 +201,6 @@ function subscribeChannel(channel) {
 """)
 
 
-# ✅ Endpoint de prueba
 @app.route("/ping")
 def ping():
     return jsonify({"status": "Servidor Flask activo ✅"}), 200
