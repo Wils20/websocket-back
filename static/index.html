@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Panel de Canales</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+  <h2>Chat en tiempo real</h2>
+  <input id="username" placeholder="Tu nombre">
+  <input id="channel" placeholder="Canal (ej: general)">
+  <input id="message" placeholder="Mensaje...">
+  <button onclick="sendMessage()">Enviar</button>
+
+  <div id="chat"></div>
+
+  <script>
+    const socket = io();
+
+    function sendMessage() {
+      const sender = document.getElementById('username').value;
+      const message = document.getElementById('message').value;
+      const channel = document.getElementById('channel').value || 'general';
+      socket.emit('send_message', { sender, message, channel });
+      document.getElementById('message').value = '';
+    }
+
+    socket.on('new_message', (data) => {
+      const chat = document.getElementById('chat');
+      const msg = document.createElement('div');
+      msg.textContent = `[${data.channel}] ${data.sender}: ${data.message}`;
+      chat.appendChild(msg);
+    });
+  </script>
+</body>
+</html>
