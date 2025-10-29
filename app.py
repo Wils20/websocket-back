@@ -1,16 +1,17 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import pusher
-import mysql.connector
+import mysql.connector 
 from datetime import datetime
 
 app = Flask(__name__)
+
+# 🔓 CORS (para frontends de Vercel)
 CORS(app, origins=[
     "https://websocket-front-wil.vercel.app",
     "https://websocket-front2-wil.vercel.app",
     "https://websocket-front-wil-git-master-wils20s-projects.vercel.app",
-    "https://websocket-front2-wil-git-master-wils20s-projects.vercel.app",
-    "http://localhost:5000"  # para pruebas locales
+    "https://websocket-front2-wil-git-master-wils20s-projects.vercel.app"
 ])
 
 # 🔹 Conexión a MySQL
@@ -31,17 +32,17 @@ pusher_client = pusher.Pusher(
     ssl=True
 )
 
-# ✅ Ruta para enviar mensajes
+# ✅ Ruta para enviar mensaje
 @app.route("/send", methods=["POST"])
 def enviar_mensaje():
     try:
         data = request.get_json()
         username = data.get("sender")
         message = data.get("message")
-        channel = data.get("channel")
+        channel = data.get("channel", "general")
 
-        if not username or not message or not channel:
-            return jsonify({"error": "Faltan datos"}), 400
+        if not username or not message:
+            return jsonify({"error": "Missing 'sender' or 'message'"}), 400
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -55,166 +56,155 @@ def enviar_mensaje():
         cursor.close()
         db.close()
 
-        # Enviar a Pusher
-        pusher_client.trigger('my-channel', 'my-event', {
+        # Enviar mensaje en tiempo real por Pusher
+        pusher_client.trigger(channel, 'new-message', {
             'sender': username,
             'message': message,
-            'channel': channel,
             'timestamp': timestamp
         })
 
-        return jsonify({"status": "Mensaje guardado y enviado"}), 200
+        return jsonify({"status": "Mensaje enviado"}), 200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ✅ Ruta para obtener mensajes por canal
-@app.route("/messages", methods=["GET"])
-def obtener_mensajes():
+# ✅ Ruta para obtener historial de un canal
+@app.route("/messages/<channel>", methods=["GET"])
+def obtener_mensajes(channel):
     try:
-        channel = request.args.get("channel")
-        if not channel:
-            return jsonify({"error": "Falta el parámetro 'channel'"}), 400
-
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
         cursor.execute(
-            "SELECT username, message, timestamp FROM messages WHERE channel = %s ORDER BY id ASC",
+            "SELECT username, message, timestamp FROM messages WHERE channel=%s ORDER BY id DESC LIMIT 50",
             (channel,)
         )
         mensajes = cursor.fetchall()
         cursor.close()
         db.close()
-        return jsonify(mensajes), 200
+        return jsonify(mensajes[::-1]), 200  # Revertir para mostrar en orden cronológico
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ✅ Ruta del panel administrativo
-@app.route("/", methods=["GET"])
-def home():
-    html = """
+# ✅ Panel administrativo HTML integrado
+@app.route("/")
+def index():
+    return render_template_string("""
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Panel de Canales - Chat Admin</title>
-  <script src="https://js.pusher.com/7.2/pusher.min.js"></script>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: "Segoe UI", Tahoma, sans-serif; }
-    body { height: 100vh; display: flex; background: #f2f3f5; }
-    .container { display: flex; width: 100%; }
-    .sidebar { width: 260px; background: #ffffff; border-right: 1px solid #ddd; padding: 20px; }
-    .sidebar h2 { font-size: 18px; margin-bottom: 10px; color: #444; }
-    .sidebar ul { list-style: none; }
-    .sidebar li { padding: 10px; margin-bottom: 5px; background: #f8f9fa; border-radius: 8px; cursor: pointer; transition: background 0.2s; }
-    .sidebar li:hover, .sidebar li.active { background: #dbeafe; color: #1e40af; }
-    .chat-section { flex: 1; display: flex; flex-direction: column; }
-    .chat-header { padding: 15px; border-bottom: 1px solid #ddd; background: #ffffff; }
-    .chat-messages { flex: 1; padding: 20px; overflow-y: auto; background: #f1f5f9; }
-    .message { margin-bottom: 15px; }
-    .message strong { color: #1d4ed8; }
-    .message .time { font-size: 0.8em; color: gray; margin-left: 5px; }
-    .chat-input { display: flex; border-top: 1px solid #ddd; background: #ffffff; padding: 10px; }
-    .chat-input input { padding: 10px; margin-right: 5px; border: 1px solid #ccc; border-radius: 8px; flex: 1; }
-    .chat-input button { background: #1d4ed8; color: white; border: none; padding: 10px 15px; border-radius: 8px; cursor: pointer; }
-    .chat-input button:hover { background: #2563eb; }
-    .placeholder { color: gray; text-align: center; margin-top: 50px; }
-  </style>
+    <meta charset="UTF-8">
+    <title>Panel de Canales - Chat Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://js.pusher.com/8.2/pusher.min.js"></script>
 </head>
-<body>
-  <div class="container">
-    <aside class="sidebar">
-      <h2>📡 Canales</h2>
-      <ul id="channelList">
-        <li data-channel="canal1@gmail.com">canal1@gmail.com</li>
-        <li data-channel="canal2@gmail.com">canal2@gmail.com</li>
-        <li data-channel="soporte@gmail.com">soporte@gmail.com</li>
-      </ul>
-    </aside>
+<body class="bg-gray-100">
+    <div class="flex h-screen">
+        <!-- Panel lateral -->
+        <aside class="w-1/4 bg-white shadow-lg p-4 overflow-y-auto">
+            <h2 class="text-xl font-bold mb-4 text-purple-600">📡 Canales</h2>
+            <div id="channel-list" class="space-y-2">
+                <button onclick="selectChannel('general')" class="w-full text-left p-2 rounded bg-purple-100 hover:bg-purple-200">general</button>
+                <button onclick="selectChannel('ventas')" class="w-full text-left p-2 rounded hover:bg-gray-200">ventas</button>
+                <button onclick="selectChannel('soporte')" class="w-full text-left p-2 rounded hover:bg-gray-200">soporte</button>
+                <button onclick="selectChannel('marketing')" class="w-full text-left p-2 rounded hover:bg-gray-200">marketing</button>
+                <button onclick="selectChannel('gmail.com')" class="w-full text-left p-2 rounded hover:bg-gray-200">gmail.com</button>
+            </div>
+        </aside>
 
-    <main class="chat-section">
-      <div class="chat-header">
-        <h2 id="activeChannel">Selecciona un canal</h2>
-      </div>
+        <!-- Área de chat -->
+        <main class="flex-1 flex flex-col">
+            <div class="p-4 bg-white shadow flex justify-between items-center">
+                <h2 id="channel-name" class="text-lg font-semibold text-purple-700">Selecciona un canal</h2>
+            </div>
 
-      <div id="messages" class="chat-messages">
-        <p class="placeholder">Selecciona un canal para ver el historial...</p>
-      </div>
+            <div id="chat-box" class="flex-1 p-4 overflow-y-auto"></div>
 
-      <div class="chat-input">
-        <input type="text" id="sender" placeholder="Tu nombre" />
-        <input type="text" id="messageInput" placeholder="Escribe un mensaje..." />
-        <button id="sendBtn">Enviar</button>
-      </div>
-    </main>
-  </div>
+            <div class="p-4 bg-white flex">
+                <input id="username" class="border rounded w-1/5 p-2 mr-2" placeholder="Tu nombre">
+                <input id="message" class="border rounded w-3/5 p-2 mr-2" placeholder="Escribe un mensaje...">
+                <button onclick="sendMessage()" class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700">Enviar</button>
+            </div>
+        </main>
+    </div>
 
-  <script>
-    const pusher = new Pusher("b6bbf62d682a7a882f41", { cluster: "mt1" });
-    let currentChannel = null;
-    const channelList = document.getElementById("channelList");
-    const messageContainer = document.getElementById("messages");
-    const activeChannel = document.getElementById("activeChannel");
-    const senderInput = document.getElementById("sender");
-    const messageInput = document.getElementById("messageInput");
-    const sendBtn = document.getElementById("sendBtn");
+<script>
+let currentChannel = null;
 
-    channelList.addEventListener("click", async (e) => {
-      if (e.target.tagName === "LI") {
-        document.querySelectorAll(".sidebar li").forEach(li => li.classList.remove("active"));
-        e.target.classList.add("active");
-        currentChannel = e.target.dataset.channel;
-        activeChannel.textContent = currentChannel;
-        await loadMessages(currentChannel);
-      }
+// 🧭 Seleccionar canal
+function selectChannel(channel) {
+    currentChannel = channel;
+    document.getElementById("channel-name").innerText = "#" + channel;
+    document.getElementById("chat-box").innerHTML = "";
+    loadMessages(channel);
+    subscribeChannel(channel);
+}
+
+// 🔁 Cargar historial del canal
+async function loadMessages(channel) {
+    const res = await fetch(`/messages/${channel}`);
+    const messages = await res.json();
+    const chatBox = document.getElementById("chat-box");
+    chatBox.innerHTML = "";
+
+    messages.forEach(msg => {
+        const msgDiv = document.createElement("div");
+        msgDiv.className = "bg-gray-50 p-2 rounded mb-1";
+        msgDiv.innerHTML = `<strong>${msg.username}:</strong> ${msg.message} <small class="text-gray-400">${msg.timestamp}</small>`;
+        chatBox.appendChild(msgDiv);
     });
 
-    async function loadMessages(channel) {
-      messageContainer.innerHTML = "<p class='placeholder'>Cargando mensajes...</p>";
-      const res = await fetch(`/messages?channel=${channel}`);
-      const data = await res.json();
-      messageContainer.innerHTML = "";
-      data.forEach(msg => {
-        const div = document.createElement("div");
-        div.classList.add("message");
-        div.innerHTML = `<strong>${msg.username}</strong>: ${msg.message} <span class="time">(${msg.timestamp})</span>`;
-        messageContainer.appendChild(div);
-      });
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+// 🚀 Enviar mensaje
+async function sendMessage() {
+    const sender = document.getElementById("username").value.trim();
+    const message = document.getElementById("message").value.trim();
+
+    if (!sender || !message || !currentChannel) {
+        alert("Completa todos los campos y selecciona un canal.");
+        return;
     }
 
-    sendBtn.addEventListener("click", async () => {
-      const sender = senderInput.value.trim();
-      const message = messageInput.value.trim();
-      if (!sender || !message || !currentChannel) {
-        alert("Completa tu nombre, el mensaje y selecciona un canal.");
-        return;
-      }
-      await fetch("/send", {
+    await fetch("/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ sender, message, channel: currentChannel })
-      });
-      messageInput.value = "";
     });
 
-    const pusherChannel = pusher.subscribe("my-channel");
-    pusherChannel.bind("my-event", function (data) {
-      if (data.channel === currentChannel) {
-        const div = document.createElement("div");
-        div.classList.add("message");
-        div.innerHTML = `<strong>${data.sender}</strong>: ${data.message} <span class="time">(${data.timestamp})</span>`;
-        messageContainer.appendChild(div);
-        messageContainer.scrollTop = messageContainer.scrollHeight;
-      }
+    document.getElementById("message").value = "";
+}
+
+// ⚡ Conectar con Pusher para mensajes instantáneos
+let pusher = new Pusher('b6bbf62d682a7a882f41', { cluster: 'mt1' });
+let channelPusher = null;
+
+function subscribeChannel(channel) {
+    if (channelPusher) channelPusher.unbind_all();
+
+    channelPusher = pusher.subscribe(channel);
+    channelPusher.bind('new-message', function(data) {
+        if (currentChannel === channel) {
+            const chatBox = document.getElementById("chat-box");
+            const msgDiv = document.createElement("div");
+            msgDiv.className = "bg-purple-50 p-2 rounded mb-1";
+            msgDiv.innerHTML = `<strong>${data.sender}:</strong> ${data.message} <small class="text-gray-400">${data.timestamp}</small>`;
+            chatBox.appendChild(msgDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
     });
-  </script>
+}
+</script>
 </body>
 </html>
-"""
-    return Response(html, mimetype="text/html")
+""")
 
+# ✅ Verificación del servidor
+@app.route("/ping")
+def ping():
+    return jsonify({"status": "Servidor Flask activo ✅"}), 200
 
 if __name__ == "__main__":
     app.run(debug=True)
