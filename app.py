@@ -230,7 +230,7 @@ adminGlobal.bind("nuevo-chat", function(data) {{
   if (!document.getElementById('btn_' + c)) {{
     const btn = document.createElement('button');
     btn.id = 'btn_' + c;
-    btn.textContent = `${{c}} (${data.username})`;
+    btn.textContent = c + " (" + data.username + ")";
     btn.onclick = function() {{ selectChat(c); }};
     document.getElementById("chat-list").appendChild(btn);
   }}
