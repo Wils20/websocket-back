@@ -7,7 +7,7 @@ import random
 
 app = Flask(__name__)
 
-# 🔓 CORS (para frontends permitidos)
+# 🔓 CORS (frontends permitidos)
 CORS(app, origins=[
     "https://websocket-front-wil.vercel.app",
     "https://websocket-front2-wil.vercel.app",
@@ -33,22 +33,45 @@ pusher_client = pusher.Pusher(
     ssl=True
 )
 
-# ✅ Asignar canal aleatorio disponible
-@app.route("/get_channel", methods=["GET"])
-def get_channel():
+# ✅ Endpoint para asignar canal al cliente
+@app.route("/join", methods=["POST"])
+def join_channel():
     try:
+        data = request.get_json()
+        username = data.get("username")
+
+        if not username:
+            return jsonify({"error": "Nombre de usuario requerido"}), 400
+
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
+
+        # Buscar canales
         cursor.execute("SELECT name FROM channels")
         canales = [row["name"] for row in cursor.fetchall()]
+
+        if not canales:
+            cursor.close()
+            db.close()
+            return jsonify({"error": "No hay canales disponibles"}), 404
+
+        # Verificar si ya tiene un canal asignado
+        cursor.execute("SELECT channel FROM conversations WHERE username=%s", (username,))
+        row = cursor.fetchone()
+
+        if row:
+            channel = row["channel"]
+        else:
+            # Asignar canal disponible aleatorio
+            channel = random.choice(canales)
+            cursor.execute("INSERT INTO conversations (username, channel) VALUES (%s, %s)", (username, channel))
+            db.commit()
+
         cursor.close()
         db.close()
 
-        if not canales:
-            return jsonify({"error": "No hay canales disponibles"}), 404
+        return jsonify({"channel": channel}), 200
 
-        canal_asignado = random.choice(canales)
-        return jsonify({"channel": canal_asignado}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -104,7 +127,7 @@ def obtener_mensajes(channel):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ✅ HTML del panel administrativo (canales dinámicos)
+# ✅ HTML del panel administrativo (dinámico)
 @app.route("/")
 def index():
     db = get_db_connection()
