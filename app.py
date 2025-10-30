@@ -7,13 +7,9 @@ import random
 
 app = Flask(__name__)
 
-# ✅ CORS - dominios permitidos
-CORS(app, origins=[
-    "https://websocket-front-wil.vercel.app",
-    "https://websocket-front2-wil.vercel.app",
-    "https://websocket-front-wil-git-master-wils20s-projects.vercel.app",
-    "https://websocket-front2-wil-git-master-wils20s-projects.vercel.app"
-])
+# ✅ CORS -
+CORS(app)  # 🌍 Público: permite acceso desde cualquier dominio
+
 
 # ✅ Configuración de conexión MySQL
 DB_CONFIG = {
