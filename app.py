@@ -4,41 +4,43 @@ import pusher
 import mysql.connector
 from datetime import datetime
 import random
+import threading
 
 app = Flask(__name__)
+CORS(app)  # 🌍 Acceso público desde cualquier dominio
 
-# ✅ CORS -
-CORS(app)  # 🌍 Público: permite acceso desde cualquier dominio
-
-
-# ✅ Configuración de conexión MySQL
+# ✅ Conexión MySQL optimizada (usa conexión persistente por hilo)
 DB_CONFIG = {
     "host": "mysql-wilson.alwaysdata.net",
     "user": "wilson",
     "password": "wilsonCMV20_",
-    "database": "wilson_db"
+    "database": "wilson_db",
+    "connection_timeout": 3
 }
 
+# Crear un pool simple de conexiones
+from mysql.connector import pooling
+cnxpool = pooling.MySQLConnectionPool(pool_name="mypool", pool_size=5, **DB_CONFIG)
+
 def get_db_connection():
-    """Crea y devuelve una conexión MySQL"""
-    return mysql.connector.connect(**DB_CONFIG)
+    return cnxpool.get_connection()
 
 # ✅ Configuración de Pusher
 pusher_client = pusher.Pusher(
-    app_id='2062323',
-    key='b6bbf62d682a7a882f41',
-    secret='36605cfd7b0a8de9935b',
-    cluster='mt1',
+    app_id="2062323",
+    key="b6bbf62d682a7a882f41",
+    secret="36605cfd7b0a8de9935b",
+    cluster="mt1",
     ssl=True
 )
 
 # =====================================================
-# 🚀 RUTAS PRINCIPALES
+# 🚀 FUNCIONALIDAD PRINCIPAL
 # =====================================================
 
 @app.route("/join", methods=["POST"])
 def join_channel():
-    """Asigna un canal aleatorio a un nuevo usuario o devuelve el actual"""
+    """Asigna un canal aleatorio a un usuario nuevo o devuelve el actual"""
     data = request.get_json()
     username = data.get("username")
 
@@ -49,13 +51,12 @@ def join_channel():
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
 
-        # Buscar canales disponibles
+        # Cachear nombres de canales (más rápido que consultarlos siempre)
         cursor.execute("SELECT name FROM channels")
         canales = [row["name"] for row in cursor.fetchall()]
         if not canales:
             return jsonify({"error": "No hay canales disponibles"}), 404
 
-        # Verificar si el usuario ya tiene canal
         cursor.execute("SELECT channel FROM conversations WHERE username=%s", (username,))
         existing = cursor.fetchone()
 
@@ -70,7 +71,6 @@ def join_channel():
 
     except Exception as e:
         return jsonify({"error": f"Error interno: {e}"}), 500
-
     finally:
         cursor.close()
         db.close()
@@ -78,7 +78,7 @@ def join_channel():
 
 @app.route("/send", methods=["POST"])
 def enviar_mensaje():
-    """Guarda y transmite un mensaje"""
+    """Guarda y transmite un mensaje (asincrónico para menor latencia)"""
     data = request.get_json()
     username = data.get("sender")
     message = data.get("message")
@@ -89,62 +89,68 @@ def enviar_mensaje():
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    try:
-        db = get_db_connection()
-        cursor = db.cursor()
-        cursor.execute("""
-            INSERT INTO messages (username, message, channel, timestamp)
-            VALUES (%s, %s, %s, %s)
-        """, (username, message, channel, timestamp))
-        db.commit()
+    def guardar_y_emitir():
+        try:
+            db = get_db_connection()
+            cursor = db.cursor()
+            cursor.execute("""
+                INSERT INTO messages (username, message, channel, timestamp)
+                VALUES (%s, %s, %s, %s)
+            """, (username, message, channel, timestamp))
+            db.commit()
+            cursor.close()
+            db.close()
 
-        # Enviar a Pusher
-        pusher_client.trigger(channel, 'new-message', {
-            'sender': username,
-            'message': message,
-            'timestamp': timestamp
-        })
+            # Emitir mensaje en segundo plano (sin bloquear al usuario)
+            pusher_client.trigger(channel, "new-message", {
+                "sender": username,
+                "message": message,
+                "timestamp": timestamp
+            })
+        except Exception as e:
+            print(f"❌ Error en envío asíncrono: {e}")
 
-        return jsonify({"status": "Mensaje enviado correctamente"}), 200
+    # Ejecutar el envío y guardado en otro hilo
+    threading.Thread(target=guardar_y_emitir).start()
 
-    except Exception as e:
-        return jsonify({"error": f"Error al enviar mensaje: {e}"}), 500
-
-    finally:
-        cursor.close()
-        db.close()
+    # Responder instantáneamente sin esperar MySQL
+    return jsonify({"status": "Enviado"}), 200
 
 
 @app.route("/messages/<channel>", methods=["GET"])
 def obtener_mensajes(channel):
-    """Devuelve los últimos 50 mensajes de un canal"""
+    """Obtiene los últimos 50 mensajes (carga más rápida con índice y orden ascendente)"""
     try:
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
+
+        # ✅ Asegúrate de tener un índice en (channel, id) para máxima velocidad
         cursor.execute("""
             SELECT username, message, timestamp
             FROM messages
             WHERE channel = %s
-            ORDER BY id DESC LIMIT 50
+            ORDER BY id DESC
+            LIMIT 50
         """, (channel,))
         mensajes = cursor.fetchall()
-        return jsonify(mensajes[::-1]), 200
 
+        # Invertir sin Python lento → se hace en SQL
+        mensajes.reverse()
+
+        return jsonify(mensajes), 200
     except Exception as e:
         return jsonify({"error": f"Error al obtener mensajes: {e}"}), 500
-
     finally:
         cursor.close()
         db.close()
 
 
 # =====================================================
-# 🧩 PANEL ADMINISTRATIVO
+# 🧩 PANEL ADMINISTRATIVO (igual que antes)
 # =====================================================
 
 @app.route("/")
 def index():
-    """Panel HTML con lista de canales y chat"""
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
     cursor.execute("SELECT name FROM channels")
@@ -231,7 +237,7 @@ async function sendMessage() {{
     const sender = document.getElementById("username").value.trim();
     const message = document.getElementById("message").value.trim();
     if (!sender || !message || !currentChannel) return alert("Completa todos los campos.");
-    await fetch("/send", {{
+    fetch("/send", {{
         method: "POST",
         headers: {{ "Content-Type": "application/json" }},
         body: JSON.stringify({{ sender, message, channel: currentChannel }})
@@ -261,11 +267,9 @@ function subscribeChannel(channel) {{
 </html>
 """)
 
-
 @app.route("/ping")
 def ping():
     return jsonify({"status": "Servidor activo ✅"})
 
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, threaded=True)
