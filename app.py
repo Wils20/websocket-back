@@ -35,28 +35,23 @@ pusher_client = pusher.Pusher(
 )
 
 # ==============================================
-# 🔹 FUNCIÓN AUX: crear canal ascendente (canal1, canal2...)
+# 🔹 FUNCIÓN: crear canal ascendente (chat_1, chat_2...)
 # ==============================================
-def generar_canal_nuevo(db, cursor):
-    """
-    Inserta un nuevo canal con nombre canal1, canal2, ...
-    Devuelve el nombre creado.
-    """
-    # obtener total actual
+def generar_chat_nuevo(db, cursor):
     cursor.execute("SELECT COUNT(*) AS total FROM channels")
     row = cursor.fetchone()
     total = row["total"] if row and "total" in row else 0
     nuevo_num = total + 1
-    nuevo_nombre = f"canal{nuevo_num}"
+    nuevo_nombre = f"chat_{nuevo_num}"
     cursor.execute("INSERT INTO channels (name) VALUES (%s)", (nuevo_nombre,))
     db.commit()
     return nuevo_nombre
 
 # ==============================================
-# 🟢 JOIN - Cliente se une y crea canal nuevo si no tiene
+# 🟢 JOIN - Cliente se une y obtiene su chat
 # ==============================================
 @app.route("/join", methods=["POST"])
-def join_channel():
+def join_chat():
     data = request.get_json() or {}
     username = data.get("username")
     if not username:
@@ -68,54 +63,51 @@ def join_channel():
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
 
-        # Verificar si el usuario ya tiene canal
+        # Verificar si ya tiene chat
         cursor.execute("SELECT channel FROM conversations WHERE username=%s", (username,))
         existing = cursor.fetchone()
 
         if existing and existing.get("channel"):
-            channel = existing["channel"]
+            chat = existing["channel"]
             created = False
         else:
-            channel = generar_canal_nuevo(db, cursor)
-            cursor.execute("INSERT INTO conversations (username, channel) VALUES (%s, %s)", (username, channel))
+            chat = generar_chat_nuevo(db, cursor)
+            cursor.execute("INSERT INTO conversations (username, channel) VALUES (%s, %s)", (username, chat))
             db.commit()
             created = True
 
-        # Notificar admin sólo si se creó canal nuevo
+        # Notificar al admin si es un chat nuevo
         if created:
             try:
-                pusher_client.trigger("admin_global", "nuevo-canal", {"channel": channel})
+                pusher_client.trigger("admin_global", "nuevo-chat", {"chat": chat, "username": username})
             except Exception as e:
-                # no romper el flujo si pusher falla
-                print("Warning: pusher admin_global trigger failed:", e)
+                print("⚠️ Pusher admin_global error:", e)
 
-        return jsonify({"channel": channel}), 200
+        return jsonify({"chat": chat, "username": username}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
     finally:
-        if cursor is not None:
-            cursor.close()
-        if db is not None:
-            db.close()
+        if cursor: cursor.close()
+        if db: db.close()
 
 # ==============================================
-# 💬 ENVIAR MENSAJE (asincrónico para menor latencia)
+# 💬 ENVIAR MENSAJE (asincrónico)
 # ==============================================
 @app.route("/send", methods=["POST"])
 def enviar_mensaje():
     data = request.get_json() or {}
     username = data.get("sender")
     message = data.get("message")
-    channel = data.get("channel")
+    chat = data.get("channel")
 
-    if not username or not message or not channel:
+    if not username or not message or not chat:
         return jsonify({"error": "Campos incompletos"}), 400
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def guardar_y_emitir(s, m, ch, ts):
+    def guardar_y_emitir():
         db2 = None
         cursor2 = None
         try:
@@ -123,62 +115,55 @@ def enviar_mensaje():
             cursor2 = db2.cursor()
             cursor2.execute(
                 "INSERT INTO messages (username, message, channel, timestamp) VALUES (%s, %s, %s, %s)",
-                (s, m, ch, ts)
+                (username, message, chat, timestamp)
             )
             db2.commit()
-            # emitir en pusher
-            try:
-                pusher_client.trigger(ch, "new-message", {"sender": s, "message": m, "timestamp": ts})
-            except Exception as e:
-                print("Warning: pusher trigger failed:", e)
-        except Exception as ex:
-            print("Error guardar_y_emitir:", ex)
+
+            pusher_client.trigger(chat, "new-message", {
+                "sender": username,
+                "message": message,
+                "timestamp": timestamp
+            })
+
+        except Exception as e:
+            print("⚠️ Error guardar_y_emitir:", e)
         finally:
-            if cursor2 is not None:
-                cursor2.close()
-            if db2 is not None:
-                db2.close()
+            if cursor2: cursor2.close()
+            if db2: db2.close()
 
-    # lanzar hilo para no bloquear la respuesta
-    threading.Thread(target=guardar_y_emitir, args=(username, message, channel, timestamp), daemon=True).start()
-
-    # respuesta inmediata
-    return jsonify({"status": "Enviado"}), 200
+    threading.Thread(target=guardar_y_emitir, daemon=True).start()
+    return jsonify({"status": "enviado"}), 200
 
 # ==============================================
-# 📜 HISTORIAL DE MENSAJES (traer últimos N rápido)
+# 📜 HISTORIAL DE MENSAJES
 # ==============================================
-@app.route("/messages/<channel>", methods=["GET"])
-def obtener_mensajes(channel):
+@app.route("/messages/<chat>", methods=["GET"])
+def obtener_mensajes(chat):
     db = None
     cursor = None
     try:
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
-
-        # Tomamos los últimos 100 por id descendente (más rápido con índice), luego invertimos en Python
         cursor.execute("""
             SELECT username, message, timestamp
             FROM messages
             WHERE channel = %s
             ORDER BY id DESC
             LIMIT 100
-        """, (channel,))
+        """, (chat,))
         rows = cursor.fetchall() or []
-        rows.reverse()  # ahora están en orden ascendente (más natural)
+        rows.reverse()
         return jsonify(rows), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
     finally:
-        if cursor is not None:
-            cursor.close()
-        if db is not None:
-            db.close()
+        if cursor: cursor.close()
+        if db: db.close()
 
 # ==============================================
-# 🧩 PANEL ADMIN (recibe nuevos canales en vivo)
+# 🧩 PANEL ADMIN
 # ==============================================
 @app.route("/")
 def index():
@@ -188,14 +173,12 @@ def index():
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
         cursor.execute("SELECT name FROM channels ORDER BY id ASC")
-        canales = [row["name"] for row in cursor.fetchall()]
+        chats = [row["name"] for row in cursor.fetchall()]
     finally:
-        if cursor is not None:
-            cursor.close()
-        if db is not None:
-            db.close()
+        if cursor: cursor.close()
+        if db: db.close()
 
-    botones = "".join([f"<button id='btn_{c}' onclick=\"selectChannel('{c}')\">{c}</button>" for c in canales])
+    botones = "".join([f"<button id='btn_{c}' onclick=\"selectChat('{c}')\">{c}</button>" for c in chats])
 
     return render_template_string(f"""
 <!DOCTYPE html>
@@ -223,11 +206,11 @@ footer button:hover {{ background:#4a1f82; }}
 </head>
 <body>
   <aside>
-    <h2>Canales Activos</h2>
-    <div id="channel-list">{botones}</div>
+    <h2>Chats Activos</h2>
+    <div id="chat-list">{botones}</div>
   </aside>
   <main>
-    <header id="channel-name">Selecciona un canal</header>
+    <header id="chat-name">Selecciona un chat</header>
     <div id="chat-box"></div>
     <footer>
       <input id="message" placeholder="Escribe un mensaje...">
@@ -236,32 +219,30 @@ footer button:hover {{ background:#4a1f82; }}
   </main>
 
 <script>
-let currentChannel = null;
+let currentChat = null;
 let pusher = new Pusher('b6bbf62d682a7a882f41', {{cluster:'mt1'}});
 let activeSub = null;
 
-// Suscripción global del admin para recibir nuevos canales en vivo
+// Admin escucha nuevos chats
 let adminGlobal = pusher.subscribe("admin_global");
-adminGlobal.bind("nuevo-canal", function(data) {{
-  const c = data.channel;
-  // si no existe el botón, crearlo
+adminGlobal.bind("nuevo-chat", function(data) {{
+  const c = data.chat;
   if (!document.getElementById('btn_' + c)) {{
     const btn = document.createElement('button');
     btn.id = 'btn_' + c;
-    btn.textContent = c;
-    btn.onclick = function() {{ selectChannel(c); }};
-    document.getElementById("channel-list").appendChild(btn);
+    btn.textContent = `${{c}} (${data.username})`;
+    btn.onclick = function() {{ selectChat(c); }};
+    document.getElementById("chat-list").appendChild(btn);
   }}
 }});
 
-async function selectChannel(c) {{
-  currentChannel = c;
-  document.getElementById("channel-name").innerText = "Canal: " + c;
+async function selectChat(c) {{
+  currentChat = c;
+  document.getElementById("chat-name").innerText = "Chat: " + c;
   const res = await fetch(`/messages/${{c}}`);
   const messages = await res.json();
   renderMessages(messages);
 
-  // subscribir al canal seleccionado
   if (activeSub) pusher.unsubscribe(activeSub.name);
   activeSub = pusher.subscribe(c);
   activeSub.bind("new-message", function(d) {{ addMessage(d.sender, d.message, d.timestamp); }});
@@ -284,11 +265,11 @@ function addMessage(u, m, t) {{
 
 async function sendMessage() {{
   const msg = document.getElementById("message").value.trim();
-  if (!msg || !currentChannel) return;
+  if (!msg || !currentChat) return;
   await fetch("/send", {{
     method: "POST",
     headers: {{ "Content-Type": "application/json" }},
-    body: JSON.stringify({{ sender: "ADMIN", message: msg, channel: currentChannel }})
+    body: JSON.stringify({{ sender: "ADMIN", message: msg, channel: currentChat }})
   }});
   document.getElementById("message").value = "";
 }}
