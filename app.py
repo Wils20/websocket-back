@@ -3,13 +3,16 @@ from flask_cors import CORS
 import pusher
 import mysql.connector
 from datetime import datetime
-import random
 import threading
+import random
+from mysql.connector import pooling
 
 app = Flask(__name__)
-CORS(app)  # 🌍 Acceso público desde cualquier dominio
+CORS(app)  # Público: cualquier dominio
 
-# ✅ Conexión MySQL optimizada (usa conexión persistente por hilo)
+# ==============================================
+# 🔹 CONFIGURACIÓN MYSQL CON POOL DE CONEXIONES
+# ==============================================
 DB_CONFIG = {
     "host": "mysql-wilson.alwaysdata.net",
     "user": "wilson",
@@ -17,15 +20,14 @@ DB_CONFIG = {
     "database": "wilson_db",
     "connection_timeout": 3
 }
-
-# Crear un pool simple de conexiones
-from mysql.connector import pooling
 cnxpool = pooling.MySQLConnectionPool(pool_name="mypool", pool_size=5, **DB_CONFIG)
 
 def get_db_connection():
     return cnxpool.get_connection()
 
-# ✅ Configuración de Pusher
+# ==============================================
+# 🔹 CONFIGURACIÓN PUSHER
+# ==============================================
 pusher_client = pusher.Pusher(
     app_id="2062323",
     key="b6bbf62d682a7a882f41",
@@ -34,13 +36,13 @@ pusher_client = pusher.Pusher(
     ssl=True
 )
 
-# =====================================================
-# 🚀 FUNCIONALIDAD PRINCIPAL
-# =====================================================
+# ==============================================
+# 🚀 RUTAS PRINCIPALES
+# ==============================================
 
 @app.route("/join", methods=["POST"])
 def join_channel():
-    """Asigna un canal aleatorio a un usuario nuevo o devuelve el actual"""
+    """Crea un canal nuevo automáticamente por usuario"""
     data = request.get_json()
     username = data.get("username")
 
@@ -51,19 +53,16 @@ def join_channel():
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
 
-        # Cachear nombres de canales (más rápido que consultarlos siempre)
-        cursor.execute("SELECT name FROM channels")
-        canales = [row["name"] for row in cursor.fetchall()]
-        if not canales:
-            return jsonify({"error": "No hay canales disponibles"}), 404
-
+        # Verificar si ya tiene canal
         cursor.execute("SELECT channel FROM conversations WHERE username=%s", (username,))
         existing = cursor.fetchone()
 
         if existing:
             channel = existing["channel"]
         else:
-            channel = random.choice(canales)
+            # Crear un nuevo canal único
+            channel = f"canal_{random.randint(1000,9999)}"
+            cursor.execute("INSERT INTO channels (name) VALUES (%s)", (channel,))
             cursor.execute("INSERT INTO conversations (username, channel) VALUES (%s, %s)", (username, channel))
             db.commit()
 
@@ -78,13 +77,13 @@ def join_channel():
 
 @app.route("/send", methods=["POST"])
 def enviar_mensaje():
-    """Guarda y transmite un mensaje (asincrónico para menor latencia)"""
+    """Guarda y transmite un mensaje (ADMIN o CLIENTE)"""
     data = request.get_json()
     username = data.get("sender")
     message = data.get("message")
-    channel = data.get("channel", "canal1")
+    channel = data.get("channel")
 
-    if not username or not message:
+    if not username or not message or not channel:
         return jsonify({"error": "Faltan campos obligatorios"}), 400
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -101,7 +100,7 @@ def enviar_mensaje():
             cursor.close()
             db.close()
 
-            # Emitir mensaje en segundo plano (sin bloquear al usuario)
+            # Enviar mensaje en tiempo real
             pusher_client.trigger(channel, "new-message", {
                 "sender": username,
                 "message": message,
@@ -110,33 +109,24 @@ def enviar_mensaje():
         except Exception as e:
             print(f"❌ Error en envío asíncrono: {e}")
 
-    # Ejecutar el envío y guardado en otro hilo
     threading.Thread(target=guardar_y_emitir).start()
-
-    # Responder instantáneamente sin esperar MySQL
     return jsonify({"status": "Enviado"}), 200
 
 
 @app.route("/messages/<channel>", methods=["GET"])
 def obtener_mensajes(channel):
-    """Obtiene los últimos 50 mensajes (carga más rápida con índice y orden ascendente)"""
+    """Obtiene los últimos 50 mensajes del canal"""
     try:
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
-
-        # ✅ Asegúrate de tener un índice en (channel, id) para máxima velocidad
         cursor.execute("""
             SELECT username, message, timestamp
             FROM messages
             WHERE channel = %s
-            ORDER BY id DESC
+            ORDER BY id ASC
             LIMIT 50
         """, (channel,))
         mensajes = cursor.fetchall()
-
-        # Invertir sin Python lento → se hace en SQL
-        mensajes.reverse()
-
         return jsonify(mensajes), 200
     except Exception as e:
         return jsonify({"error": f"Error al obtener mensajes: {e}"}), 500
@@ -145,15 +135,14 @@ def obtener_mensajes(channel):
         db.close()
 
 
-# =====================================================
-# 🧩 PANEL ADMINISTRATIVO (igual que antes)
-# =====================================================
-
+# ==============================================
+# 🧩 PANEL ADMINISTRATIVO (ADMIN = fijo)
+# ==============================================
 @app.route("/")
 def index():
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT name FROM channels")
+    cursor.execute("SELECT name FROM channels ORDER BY id DESC")
     canales = [row["name"] for row in cursor.fetchall()]
     cursor.close()
     db.close()
@@ -165,23 +154,23 @@ def index():
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Panel de Canales</title>
+<title>Admin Chat</title>
 <script src="https://js.pusher.com/8.2/pusher.min.js"></script>
 <style>
-body {{ margin: 0; font-family: Arial, sans-serif; background: #f4f4f4; display: flex; height: 100vh; }}
+body {{ margin: 0; font-family: Arial, sans-serif; background: #eef1f5; display: flex; height: 100vh; }}
 aside {{ width: 25%; background: #fff; border-right: 1px solid #ccc; overflow-y: auto; padding: 20px; }}
 aside h2 {{ color: #5a2ca0; font-size: 20px; margin-bottom: 10px; }}
 aside button {{ display: block; width: 100%; background: #eee; border: none; padding: 10px; margin-bottom: 5px; text-align: left; cursor: pointer; border-radius: 5px; transition: background 0.2s; }}
 aside button:hover {{ background: #ddd; }}
 main {{ flex: 1; display: flex; flex-direction: column; }}
-header {{ background: #fff; border-bottom: 1px solid #ccc; padding: 10px 20px; font-weight: bold; color: #5a2ca0; }}
+header {{ background: #5a2ca0; color: white; padding: 10px 20px; font-weight: bold; }}
 #chat-box {{ flex: 1; padding: 15px; overflow-y: auto; background: #fafafa; }}
-.message {{ background: #fff; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }}
-.message strong {{ color: #333; }}
-.message small {{ color: #888; font-size: 11px; }}
+.message {{ max-width: 60%; padding: 10px; border-radius: 10px; margin-bottom: 10px; line-height: 1.4; }}
+.admin {{ background: #5a2ca0; color: white; align-self: flex-end; text-align: right; }}
+.user {{ background: #e1eaff; color: #222; align-self: flex-start; text-align: left; }}
+.time {{ font-size: 10px; opacity: 0.7; margin-top: 4px; }}
 footer {{ background: #fff; padding: 10px; display: flex; border-top: 1px solid #ccc; }}
 footer input {{ padding: 8px; margin-right: 5px; border: 1px solid #ccc; border-radius: 4px; }}
-footer input#username {{ width: 20%; }}
 footer input#message {{ flex: 1; }}
 footer button {{ background: #5a2ca0; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; }}
 footer button:hover {{ background: #4b2386; }}
@@ -189,14 +178,14 @@ footer button:hover {{ background: #4b2386; }}
 </head>
 <body>
   <aside>
-    <h2>📡 Canales</h2>
+    <h2>💬 Chats Activos</h2>
     {botones}
   </aside>
   <main>
-    <header id="channel-name">Selecciona un canal</header>
-    <div id="chat-box"></div>
+    <header id="channel-name">Selecciona un chat</header>
+    <div id="chat-box" style="display:flex;flex-direction:column;"></div>
     <footer>
-      <input id="username" placeholder="Tu nombre">
+      <input type="hidden" id="username" value="ADMIN">
       <input id="message" placeholder="Escribe un mensaje...">
       <button onclick="sendMessage()">Enviar</button>
     </footer>
@@ -209,8 +198,7 @@ let channelPusher = null;
 
 function selectChannel(channel) {{
     currentChannel = channel;
-    document.getElementById("channel-name").innerText = "#" + channel;
-    document.getElementById("chat-box").innerHTML = "<p>Cargando mensajes...</p>";
+    document.getElementById("channel-name").innerText = "Chat: " + channel;
     loadMessages(channel);
     subscribeChannel(channel);
 }}
@@ -226,17 +214,17 @@ function renderMessages(messages) {{
     chatBox.innerHTML = "";
     messages.forEach(m => {{
         const div = document.createElement("div");
-        div.className = "message";
-        div.innerHTML = `<strong>${{m.username}}:</strong> ${{m.message}} <br><small>${{m.timestamp}}</small>`;
+        div.className = "message " + (m.username === "ADMIN" ? "admin" : "user");
+        div.innerHTML = `<strong>${{m.username}}</strong><br>${{m.message}}<div class='time'>${{m.timestamp}}</div>`;
         chatBox.appendChild(div);
     }});
     chatBox.scrollTop = chatBox.scrollHeight;
 }}
 
 async function sendMessage() {{
-    const sender = document.getElementById("username").value.trim();
     const message = document.getElementById("message").value.trim();
-    if (!sender || !message || !currentChannel) return alert("Completa todos los campos.");
+    if (!message || !currentChannel) return;
+    const sender = "ADMIN";
     fetch("/send", {{
         method: "POST",
         headers: {{ "Content-Type": "application/json" }},
@@ -255,9 +243,8 @@ function subscribeChannel(channel) {{
         if (currentChannel !== channel) return;
         const chatBox = document.getElementById("chat-box");
         const msgDiv = document.createElement("div");
-        msgDiv.className = "message";
-        msgDiv.style.background = "#f5e8ff";
-        msgDiv.innerHTML = `<strong>${{data.sender}}:</strong> ${{data.message}} <br><small>${{data.timestamp}}</small>`;
+        msgDiv.className = "message " + (data.sender === "ADMIN" ? "admin" : "user");
+        msgDiv.innerHTML = `<strong>${{data.sender}}</strong><br>${{data.message}}<div class='time'>${{data.timestamp}}</div>`;
         chatBox.appendChild(msgDiv);
         chatBox.scrollTop = chatBox.scrollHeight;
     }});
